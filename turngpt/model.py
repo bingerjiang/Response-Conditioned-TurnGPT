@@ -14,7 +14,7 @@ from turngpt.plot_utils import plot_trp
 from turngpt.projection_labeler import ProjectionLabeler
 from turngpt.tokenizer import SpokenDialogTokenizer
 
-
+import pdb
 mpl.use("agg")
 
 
@@ -258,6 +258,7 @@ class TurnGPT(pl.LightningModule, Utils):
         weight_loss=False,
         weight_regular_token=0.5,
         weight_eos_token=1.0,
+        tokenizer_punctuation_norm=False,
         **model_kwargs,
     ):
         super().__init__()
@@ -271,7 +272,7 @@ class TurnGPT(pl.LightningModule, Utils):
         self.weight_regular_token = weight_regular_token
         self.weight_eos_token = weight_eos_token
         self.omit_dialog_states = omit_dialog_states
-
+        self.tokenizer_punctuation_norm = tokenizer_punctuation_norm
         # Load `transformers` model
         self.transformer = load_transformer(
             pretrained_model_name_or_path, pretrained=pretrained, **model_kwargs
@@ -300,7 +301,13 @@ class TurnGPT(pl.LightningModule, Utils):
 
     def init_tokenizer(self):
         # The tokenizer should always be a part of the model
-        self.tokenizer = SpokenDialogTokenizer(self.name_or_path)
+        normalize_punctuation = False
+        if self.tokenizer_punctuation_norm:
+            normalize_punctuation = True
+        self.tokenizer = SpokenDialogTokenizer(self.name_or_path, normalization = normalize_punctuation)
+        pdb.set_trace()
+        #print('b2 test: normalize_punct: ', normalize_punctuation)
+        #print('b2 test: self.tokenizer_punctuation_norm: ', self.tokenizer_punctuation_norm)
 
         # Add extra embeddings for custom tokens
         # Optional: Initialize <ts> to be close to punctuation tokens.
@@ -645,6 +652,7 @@ class TurnGPT(pl.LightningModule, Utils):
             default=True,
             help="Load pretrained weights or not.",
         )
+        
 
         # Model specific
         parser.add_argument("--embd_pdrob", type=float, default=None)
@@ -674,6 +682,7 @@ class TurnGPT(pl.LightningModule, Utils):
             type=str,
             help="'Linear' or 'Attention'",
         )
+        parser.add_argument("--tokenizer_punctuation_norm", action='store_true', help='remove punctuation or not')
 
         # Training
         parser.add_argument(
@@ -715,6 +724,7 @@ if __name__ == "__main__":
             pretrained=args.pretrained,
             no_train_first_n=args.no_train_first_n,
             omit_dialog_states=args.omit_dialog_states,
+            tokenizer_punctuation_norm = args.tokenizer_punctuation_norm
         )
         model.init_tokenizer()
         model.initialize_special_embeddings()
