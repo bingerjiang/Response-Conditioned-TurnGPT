@@ -504,10 +504,25 @@ class TurnGPT(pl.LightningModule, Utils):
             hidden_states = hidden_states.to(self.transformer.lm_head.weight.device)
 
         # Language Modeling
+        
+        ## b2: this predicts the next token
+        ##     we want to predict 1) turn shift or not and 2) the next utt embedding
+        
         lm_logits = self.transformer.lm_head(hidden_states)
         lm_loss = None
         if labels is not None:
             lm_loss = self.cross_entropy_loss(lm_logits, labels)
+
+
+        ## TODO:
+        # 1) combine the sentence encoding model output with hidden_states
+        #    -> binary classification
+        
+        ## get the next utterance in current batch
+        ## format in the same shape as hiddent_states 
+        
+        ## call encoding_model
+        # sent_encode = encoding_model
 
         # MultiTask Modeling
         mc_logits = None
@@ -684,7 +699,9 @@ if __name__ == "__main__":
         print(f"{k}: {v}")
 
     # Fresh Training
-    fresh = False
+    
+    ## changed by b2
+    fresh = True
     if fresh:
         model = TurnGPT(
             pretrained_model_name_or_path=args.pretrained_model_name_or_path,
@@ -759,3 +776,4 @@ if __name__ == "__main__":
             unk_token=model.tokenizer._tokenizer.unk_token,
             plot=True,
         )
+    pdb.set_trace()
