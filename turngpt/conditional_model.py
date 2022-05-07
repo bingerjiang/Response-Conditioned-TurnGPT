@@ -3,7 +3,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import wandb
 
-from transformers import GPT2LMHeadModel, GPT2Config
+from transformers import GPT2LMHeadModel, GPT2Config, AutoModel, AutoTokenizer
 from transformers.models.gpt2.modeling_gpt2 import GPT2DoubleHeadsModelOutput
 import pytorch_lightning as pl
 import torch
@@ -259,6 +259,7 @@ class TurnGPT(pl.LightningModule, Utils):
         weight_regular_token=0.5,
         weight_eos_token=1.0,
         tokenizer_punctuation_norm=False,
+        sent_embed_type = None,
         **model_kwargs,
     ):
         super().__init__()
@@ -277,7 +278,18 @@ class TurnGPT(pl.LightningModule, Utils):
         self.transformer = load_transformer(
             pretrained_model_name_or_path, pretrained=pretrained, **model_kwargs
         )
-
+        
+        # sentence embedding model
+        
+        self.sent_embed_type = sent_embed_type
+        print('sent embed type: ', sent_embed_type)
+        if self.sent_embed_type == 'simcse':
+            self.sent_embedding_tokenizer = AutoTokenizer.from_pretrained("princeton-nlp/sup-simcse-bert-base-uncased")
+            self.sent_embedding_model = AutoModel.from_pretrained("princeton-nlp/sup-simcse-bert-base-uncased")
+        
+        # cross attention
+        self.cross_attention = nn.MultiheadAttention(self.transformer.lm_head.in_features, 8)
+        
         # TRP projection head
         self.trp_projection_steps = trp_projection_steps
         if trp_projection_steps > 0:
@@ -291,10 +303,11 @@ class TurnGPT(pl.LightningModule, Utils):
                 self.trp_projection_head = nn.Linear(hidden_size, 1)
 
         self.save_hyperparameters()
+        #self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
     @property
     def run_name(self):
-        name = "TurnGPT"
+        name = "conditionalTurnGPT"
         if self.trp_projection_steps > 0:
             name += f"_proj_{self.trp_projection_steps}"
         return name
@@ -460,9 +473,29 @@ class TurnGPT(pl.LightningModule, Utils):
                 [likelihood, torch.zeros(likelihood.shape[0], 1)], dim=-1
             )
         return likelihood
+    def mean_pooling(self, model_output, attention_mask):
+        token_embeddings = model_output[0] #First element of model_output contains all token embeddings
+        input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+        return torch.sum(token_embeddings * input_mask_expanded, 1) / torch.clamp(input_mask_expanded.sum(1), min=1e-9)
 
+    def get_sentence_embeddings(self, model, data):
+        data['input_ids']=data['input_ids'][:4].to(self.device)
+        data['token_type_ids']=data['token_type_ids'][:4].to(self.device)
+        data['attention_mask']=data['attention_mask'][:4].to(self.device)
+        #pdb.set_trace()
+        print(data['input_ids'].get_device())
+        print(data['token_type_ids'].get_device())
+        print(data['attention_mask'].get_device())
+        model_output = model(**data)
+
+        #model_output.to(device)
+        # Perform pooling. In this case, max pooling.
+        sentence_embeddings = self.mean_pooling(model_output, data['attention_mask'])
+        #pdb.set_trace()
+        return sentence_embeddings 
     def forward(
         self,
+        batch = None,
         input_ids=None,
         speaker_ids=None,
         labels=None,
@@ -488,7 +521,22 @@ class TurnGPT(pl.LightningModule, Utils):
             if return_dict is not None
             else self.transformer.config.use_return_dict
         )
-
+        
+        ## test of sentence embedding model
+        test_sent = 'hi i would like very much to know about vietnam\'s etymology please'
+        test_sent_input = self.sent_embedding_tokenizer(test_sent, return_tensors='pt', max_length=271, truncation=True, padding='max_length')
+        test_sent_input['input_ids'] = test_sent_input['input_ids'].to(self.device)
+        test_sent_input['token_type_ids'] = test_sent_input['token_type_ids'].to(self.device)
+        test_sent_input['attention_mask'] = test_sent_input['attention_mask'].to(self.device)
+        test_sent_embeddings = self.sent_embedding_model(**test_sent_input, output_hidden_states=True, return_dict=True).pooler_output
+        #pdb.set_trace()
+        
+        ts_idx = [(sublist == 50257).nonzero(as_tuple=True)[0] for sublist in input_ids]
+        #batch['token_type_ids'] = batch['speaker_ids']
+        #batch.pop('speaker_ids',None)
+       # sent_embed = self.get_sentence_embeddings(self.sent_embedding_model, batch)
+        #sent_embed = self.mean_pooling(sent_embed, batch['attention_mask'].to(self.device))
+        
         transformer_outputs = self.transformer.transformer(
             input_ids,
             past_key_values=past_key_values,
@@ -504,7 +552,7 @@ class TurnGPT(pl.LightningModule, Utils):
         )
 
         hidden_states = transformer_outputs[0]
-
+        pdb.set_trace()
         # Set device for model parallelism
         if self.transformer.model_parallel:
             torch.cuda.set_device(self.transformer.transformer.first_device)
@@ -547,7 +595,7 @@ class TurnGPT(pl.LightningModule, Utils):
         #     if mc_loss is not None:
         #         output = (mc_loss,) + output
         #     return ((lm_loss,) + output) if lm_loss is not None else output
-
+        pdb.set_trace()
         return GPT2DoubleHeadsModelOutput(
             loss=lm_loss,
             mc_loss=mc_loss,
@@ -596,6 +644,7 @@ class TurnGPT(pl.LightningModule, Utils):
             batch["speaker_ids"] = None
 
         out = self.forward(
+            batch,
             batch["input_ids"],
             speaker_ids=batch["speaker_ids"],
             labels=lm_labels,
@@ -624,6 +673,7 @@ class TurnGPT(pl.LightningModule, Utils):
             batch["speaker_ids"] = None
 
         out = self.forward(
+            batch,
             batch["input_ids"],
             speaker_ids=batch["speaker_ids"],
             labels=lm_labels,
@@ -684,6 +734,14 @@ class TurnGPT(pl.LightningModule, Utils):
         )
         parser.add_argument("--tokenizer_punctuation_norm", action='store_true', help='remove punctuation or not')
 
+        # next utterance embedding
+        parser.add_argument(
+            "--sent_embed_type",
+            type=str,
+            default='simcse',
+            help="sentence embedding model, choose from: simcse, diffcse, etc."
+        )
+        
         # Training
         parser.add_argument(
             "--dropout",
