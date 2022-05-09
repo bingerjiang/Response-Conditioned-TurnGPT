@@ -14,6 +14,8 @@ from turngpt.plot_utils import plot_trp
 from turngpt.projection_labeler import ProjectionLabeler
 from turngpt.tokenizer import SpokenDialogTokenizer
 
+from turngpt.tools import remove_nonutt_tokens
+
 import pdb
 mpl.use("agg")
 
@@ -288,7 +290,7 @@ class TurnGPT(pl.LightningModule, Utils):
             self.sent_embedding_model = AutoModel.from_pretrained("princeton-nlp/sup-simcse-bert-base-uncased")
         
         # cross attention
-        self.cross_attention = nn.MultiheadAttention(self.transformer.lm_head.in_features, 8)
+        #self.cross_attention = nn.MultiheadAttention(self.transformer.lm_head.in_features, 8)
         
         # TRP projection head
         self.trp_projection_steps = trp_projection_steps
@@ -426,13 +428,25 @@ class TurnGPT(pl.LightningModule, Utils):
             loss = loss.mean()
         return loss
 
-    def bce_loss(self, logits, labels):
+    def bce_loss(self, logits, labels, sent_emb_idx_all):
         """
         Simple BCELoss for binary trp projection
 
         Must extend this if multiple labels are to be used...
         """
         loss_fct = nn.BCEWithLogitsLoss()
+        original_label = labels.clone()
+        i = 0
+        while i <len(sent_emb_idx_all):
+            j=0
+            while j < len(sent_emb_idx_all[i]):
+                label_idx_to_change = sent_emb_idx_all[i][j]
+                labels[i][label_idx_to_change]=-100
+                
+                
+                j+=1
+            
+            i+=1
 
         # Shift so that tokens < n predict n
         shift_logits = logits[..., :-1]  # , :].contiguous()
@@ -445,9 +459,9 @@ class TurnGPT(pl.LightningModule, Utils):
             torch.masked_select(shift_logits, indices_for_training),
             torch.masked_select(shift_labels, indices_for_training),
         )
-        # shift_logits = torch.masked_select(shift_logits, indices_for_training)
-        # shift_labels = torch.masked_select(shift_labels, indices_for_training)
-        # loss = loss_fct(shift_logits, shift_labels)
+        ## TODO: add <sent_embed> masks, basically indx = sent_emb_idx_all
+        
+        #pdb.set_trace()
         return loss
 
     def get_likelihood(self, logits, labels, pad_last=True, pad_first=False):
@@ -473,29 +487,18 @@ class TurnGPT(pl.LightningModule, Utils):
                 [likelihood, torch.zeros(likelihood.shape[0], 1)], dim=-1
             )
         return likelihood
-    def mean_pooling(self, model_output, attention_mask):
-        token_embeddings = model_output[0] #First element of model_output contains all token embeddings
-        input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
-        return torch.sum(token_embeddings * input_mask_expanded, 1) / torch.clamp(input_mask_expanded.sum(1), min=1e-9)
 
     def get_sentence_embeddings(self, model, data):
-        data['input_ids']=data['input_ids'][:4].to(self.device)
-        data['token_type_ids']=data['token_type_ids'][:4].to(self.device)
-        data['attention_mask']=data['attention_mask'][:4].to(self.device)
+        test_sent_input = self.sent_embedding_tokenizer(data, return_tensors='pt', max_length=128, truncation=True, padding='max_length')
+        test_sent_input['input_ids'] = test_sent_input['input_ids'].to(self.device)
+        test_sent_input['token_type_ids'] = test_sent_input['token_type_ids'].to(self.device)
+        test_sent_input['attention_mask'] = test_sent_input['attention_mask'].to(self.device)
+        test_sent_embeddings = model(**test_sent_input, output_hidden_states=True, return_dict=True).pooler_output
         #pdb.set_trace()
-        print(data['input_ids'].get_device())
-        print(data['token_type_ids'].get_device())
-        print(data['attention_mask'].get_device())
-        model_output = model(**data)
-
-        #model_output.to(device)
-        # Perform pooling. In this case, max pooling.
-        sentence_embeddings = self.mean_pooling(model_output, data['attention_mask'])
-        #pdb.set_trace()
-        return sentence_embeddings 
+        return test_sent_embeddings
+    
     def forward(
         self,
-        batch = None,
         input_ids=None,
         speaker_ids=None,
         labels=None,
@@ -524,87 +527,152 @@ class TurnGPT(pl.LightningModule, Utils):
         
         ## test of sentence embedding model
         test_sent = 'hi i would like very much to know about vietnam\'s etymology please'
-        test_sent_input = self.sent_embedding_tokenizer(test_sent, return_tensors='pt', max_length=271, truncation=True, padding='max_length')
-        test_sent_input['input_ids'] = test_sent_input['input_ids'].to(self.device)
-        test_sent_input['token_type_ids'] = test_sent_input['token_type_ids'].to(self.device)
-        test_sent_input['attention_mask'] = test_sent_input['attention_mask'].to(self.device)
-        test_sent_embeddings = self.sent_embedding_model(**test_sent_input, output_hidden_states=True, return_dict=True).pooler_output
-        #pdb.set_trace()
+        sent_embeddings = self.get_sentence_embeddings(self.sent_embedding_model, test_sent)
         
-        ts_idx = [(sublist == 50257).nonzero(as_tuple=True)[0] for sublist in input_ids]
-        #batch['token_type_ids'] = batch['speaker_ids']
-        #batch.pop('speaker_ids',None)
-       # sent_embed = self.get_sentence_embeddings(self.sent_embedding_model, batch)
-        #sent_embed = self.mean_pooling(sent_embed, batch['attention_mask'].to(self.device))
         
-        transformer_outputs = self.transformer.transformer(
-            input_ids,
-            past_key_values=past_key_values,
-            attention_mask=attention_mask,
-            token_type_ids=speaker_ids,
-            position_ids=position_ids,
-            head_mask=head_mask,
-            inputs_embeds=inputs_embeds,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-        )
+        if 50259 not in input_ids and 50258 not in input_ids:
+            ## convert batch back to the string and clean special tokens
+        # pdb.set_trace()
+            batch_sentences = [self.tokenizer.decode(el) for el in input_ids]
+            batch_sentences_turnsplit = [el.split("<ts>") for el in batch_sentences]
+            cleaned_batch_sents = remove_nonutt_tokens(batch_sentences_turnsplit)
+            
+            ## list of next_utterances embeddings to be combined with word embeddings for 0/1 turn classification
+            ## (basically just remove the first utterance)
+            next_utt_embeddings_batch = []
+            for dialog in cleaned_batch_sents:
+                next_utts_embeddings = []
+                for idx, el in enumerate(dialog):
+                    if idx !=0:
+                        el_embedding = self.get_sentence_embeddings(self.sent_embedding_model, el)
+                        next_utts_embeddings.append(el_embedding)
+                next_utt_embeddings_batch.append(next_utts_embeddings)
 
-        hidden_states = transformer_outputs[0]
-        pdb.set_trace()
-        # Set device for model parallelism
-        if self.transformer.model_parallel:
-            torch.cuda.set_device(self.transformer.transformer.first_device)
-            hidden_states = hidden_states.to(self.transformer.lm_head.weight.device)
+            #all_sentences = [self.get_sentence_embeddings(self.sent_embedding_model, el) for dialog in batch_sentences_turnsplit for el in dialog]
+            
+            ## TODO
+            # 1. need to remove sentence-final blanks (for <ts>)
+            # 2. remove <|endoftext|> symbols
+            ts_idx = [(sublist == 50257).nonzero(as_tuple=True)[0] for sublist in input_ids]
+            #print('ts_idx[0]:', ts_idx[0])
+            
+            #ts_idx2 = [(sublist == 50257).nonzero(as_tuple=True)[0] for sublist in batch['input_ids']]
+        # print('batch ts idx[0]', ts_idx2[0])
+            ## remove the last utterance, because no next_utterance available
+            #pdb.set_trace()
+            i = 0
+            while i < len(input_ids):
+                if input_ids[i][-1] in [50256, 50257]: # if <endoftext> or <ts>
+                    # remove last sentence
+                    second_last_ts_idx = ts_idx[i][-2]
+                    #self.tokenizer.eos_token_id
+                    
+                    pad_len = len(input_ids[i][second_last_ts_idx+1:])
+                    pad_tensor = torch.Tensor([50256]).to(torch.int64).repeat(pad_len).to(self.device)
+                    input_ids[i][second_last_ts_idx+1:]= pad_tensor
+                else: # end with word token, so last sentence is truncated
+                    last_ts_idx = ts_idx[-1]
+                    #print(input_ids[i])
+                   # print(last_ts_idx+1)
+                    pad_len = len(input_ids[i][last_ts_idx+1:])
+                    pad_tensor = torch.Tensor([50256]).to(torch.int64).repeat(pad_len).to(self.device)
+                    input_ids[i][last_ts_idx+1:] = 50256
+                i+=1
+            
+            # turnshift token indices, after removing the last utterance 
+            # (this is what we want)
+            ts_idx_no_last_sent = [(sublist == 50257).nonzero(as_tuple=True)[0] for sublist in input_ids]
+            
+            # now let's say we have n+1 utterances, we only keep 1:n for GPT, 2:n+1 for next_sent embedding
+            # we want to substitute 1:n-1 <ts> with 2:n sentence embeddings
+            # plus insert at idx=0 the first next_utt (2nd utterance)
+            
+            # 1. as we'll add a first sent_embedding, shift all indices +1
+            sent_emb_idx = [el[:-1]+1 for el in ts_idx_no_last_sent] # sentence positions
+            # 2. add (concat) the 0 to each tensor list
+            first_next_utt_idx = torch.zeros([1], dtype=torch.int64).to(self.device)
+            sent_emb_idx_all  = [torch.cat((first_next_utt_idx, el),0) for el in sent_emb_idx]
+            
+            transformer_outputs = self.transformer.transformer(
+                input_ids,
+                past_key_values=past_key_values,
+                attention_mask=attention_mask,
+                token_type_ids=speaker_ids,
+                position_ids=position_ids,
+                head_mask=head_mask,
+                inputs_embeds=inputs_embeds,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
 
-        # Language Modeling
-        
-        ## b2: this predicts the next token
-        ##     we want to predict 1) turn shift or not and 2) the next utt embedding
-        
-        lm_logits = self.transformer.lm_head(hidden_states)
-        lm_loss = None
-        if labels is not None:
-            lm_loss = self.cross_entropy_loss(lm_logits, labels)
+            hidden_states = transformer_outputs[0]
+            
+
+            ## go over the batch and fill in idx=0 and <ts> positions with next_sent_embed
+            i = 0
+            while i < len(sent_emb_idx_all):
+                j = 0
+                while j < len(sent_emb_idx[i]):
+                    ts_idx_to_change = sent_emb_idx_all[i][j]
+                    assert(input_ids[i][ts_idx_to_change] not in [50257,0])
+                    hidden_states[i][ts_idx_to_change] = next_utt_embeddings_batch[i][j]                
+                    j+=1            
+                i+=1
+            
+            # Set device for model parallelism
+            if self.transformer.model_parallel:
+                torch.cuda.set_device(self.transformer.transformer.first_device)
+                hidden_states = hidden_states.to(self.transformer.lm_head.weight.device)
+
+            # Language Modeling
+            
+            ## b2: this predicts the next token
+            ##     we want to predict 1) turn shift or not and 2) the next utt embedding
+            
+            lm_logits = self.transformer.lm_head(hidden_states)
+            lm_loss = None
+            if labels is not None:
+                lm_loss = self.cross_entropy_loss(lm_logits, labels)
 
 
-        ## TODO:
-        # 1) combine the sentence encoding model output with hidden_states
-        #    -> binary classification
-        
-        ## get the next utterance in current batch
-        ## format in the same shape as hiddent_states 
-        
-        ## call encoding_model
-        # sent_encode = encoding_model
+            ## TODO:
+            # 1) combine the sentence encoding model output with hidden_states
+            #    -> binary classification
+            
+            ## get the next utterance in current batch
+            ## format in the same shape as hiddent_states 
+            
+            ## call encoding_model
+            # sent_encode = encoding_model
 
-        # MultiTask Modeling
-        mc_logits = None
-        mc_loss = None
-        if self.trp_projection_steps > 0:
-            # NOTE:
-            # Assumed to only guess a single class
-            mc_logits = self.trp_projection_head(hidden_states).squeeze(-1)
+            # MultiTask Modeling
+            mc_logits = None
+            mc_loss = None
+            if self.trp_projection_steps > 0:
+                # NOTE:
+                # Assumed to only guess a single class
+                mc_logits = self.trp_projection_head(hidden_states).squeeze(-1)
 
-            if mc_labels is not None:
-                mc_loss = self.bce_loss(mc_logits, mc_labels)
+                if mc_labels is not None:
+                    mc_loss = self.bce_loss(mc_logits, mc_labels, sent_emb_idx_all)
 
-        # if not return_dict:
-        #     output = (lm_logits, mc_logits) + transformer_outputs[1:]
-        #     if mc_loss is not None:
-        #         output = (mc_loss,) + output
-        #     return ((lm_loss,) + output) if lm_loss is not None else output
-        pdb.set_trace()
-        return GPT2DoubleHeadsModelOutput(
-            loss=lm_loss,
-            mc_loss=mc_loss,
-            logits=lm_logits,
-            mc_logits=mc_logits,
-            past_key_values=transformer_outputs.past_key_values,
-            hidden_states=transformer_outputs.hidden_states,
-            attentions=transformer_outputs.attentions,
-        )
+            # if not return_dict:
+            #     output = (lm_logits, mc_logits) + transformer_outputs[1:]
+            #     if mc_loss is not None:
+            #         output = (mc_loss,) + output
+            #     return ((lm_loss,) + output) if lm_loss is not None else output
+            #pdb.set_trace()
+            return GPT2DoubleHeadsModelOutput(
+                loss=lm_loss,
+                mc_loss=mc_loss,
+                logits=lm_logits,
+                mc_logits=mc_logits,
+                past_key_values=transformer_outputs.past_key_values,
+                hidden_states=transformer_outputs.hidden_states,
+                attentions=transformer_outputs.attentions,
+            )
 
     def configure_optimizers(self):
         # NOTE:
@@ -644,7 +712,6 @@ class TurnGPT(pl.LightningModule, Utils):
             batch["speaker_ids"] = None
 
         out = self.forward(
-            batch,
             batch["input_ids"],
             speaker_ids=batch["speaker_ids"],
             labels=lm_labels,
@@ -673,7 +740,6 @@ class TurnGPT(pl.LightningModule, Utils):
             batch["speaker_ids"] = None
 
         out = self.forward(
-            batch,
             batch["input_ids"],
             speaker_ids=batch["speaker_ids"],
             labels=lm_labels,

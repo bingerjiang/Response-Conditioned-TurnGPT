@@ -177,72 +177,72 @@ def generate_sample(
     n = 0  # counter
     while n <= n_steps:
         out = model(**batch, use_cache=True)
-
-        # Sample next tokens
-        # https://github.com/huggingface/transformers/blob/439a43b6b403205eeda2d62645fc16c93627d30d/src/transformers/generation_utils.py#L1373
-        next_token_logits = out["logits"][:, -1, :]  # B, 1
-        next_token, next_prob = sample_next_token(
-            next_token_logits, top_p=top_p, top_k=top_k
-        )
-
-        # Update the generated
-        generated["input_ids"] = torch.cat(
-            (generated["input_ids"], next_token.unsqueeze(-1)), dim=-1
-        )
-        generated["probs"] = torch.cat(
-            (generated["probs"], next_prob.unsqueeze(-1)), dim=-1
-        )
-
-        # Update the input for the next step
-        batch["past_key_values"] = out["past_key_values"]
-        batch["input_ids"] = next_token.unsqueeze(-1)
-
-        # Update Next Speaker (i.e. `token_type_ids`)
-        if not model.omit_dialog_states:
-            next_speaker = update_speaker_ids(batch, model.tokenizer)
-            generated["speaker_ids"] = torch.cat(
-                (generated["speaker_ids"], next_speaker.unsqueeze(-1)), dim=-1
+        if out is not None:
+            # Sample next tokens
+            # https://github.com/huggingface/transformers/blob/439a43b6b403205eeda2d62645fc16c93627d30d/src/transformers/generation_utils.py#L1373
+            next_token_logits = out["logits"][:, -1, :]  # B, 1
+            next_token, next_prob = sample_next_token(
+                next_token_logits, top_p=top_p, top_k=top_k
             )
-            batch["speaker_ids"] = next_speaker.unsqueeze(-1)
 
-        is_eos = next_token == model.tokenizer.eos_token_id
-        if stop_at_eos and is_eos.sum() > 0:
-            # which to keep and which to omit
-            done = torch.where(is_eos)[0]
-            keep = torch.where(torch.logical_not(is_eos))[0]
+            # Update the generated
+            generated["input_ids"] = torch.cat(
+                (generated["input_ids"], next_token.unsqueeze(-1)), dim=-1
+            )
+            generated["probs"] = torch.cat(
+                (generated["probs"], next_prob.unsqueeze(-1)), dim=-1
+            )
 
-            # move the generated samples which are completed
-            completed["input_ids"].append(generated["input_ids"][done])
-            completed["probs"].append(generated["probs"][done])
+            # Update the input for the next step
+            batch["past_key_values"] = out["past_key_values"]
+            batch["input_ids"] = next_token.unsqueeze(-1)
+
+            # Update Next Speaker (i.e. `token_type_ids`)
             if not model.omit_dialog_states:
-                completed["speaker_ids"].append(generated["speaker_ids"][done])
+                next_speaker = update_speaker_ids(batch, model.tokenizer)
+                generated["speaker_ids"] = torch.cat(
+                    (generated["speaker_ids"], next_speaker.unsqueeze(-1)), dim=-1
+                )
+                batch["speaker_ids"] = next_speaker.unsqueeze(-1)
 
-            if keep.nelement() == 0:  # We have completed the sampling of all batches
-                generated["input_ids"] = []
-                generated["speaker_ids"] = []
-                generated["probs"] = []
-                break
-            else:  # Update the generated indices for continued sampling
-                generated["input_ids"] = generated["input_ids"][keep]
-                generated["probs"] = generated["probs"][keep]
+            is_eos = next_token == model.tokenizer.eos_token_id
+            if stop_at_eos and is_eos.sum() > 0:
+                # which to keep and which to omit
+                done = torch.where(is_eos)[0]
+                keep = torch.where(torch.logical_not(is_eos))[0]
+
+                # move the generated samples which are completed
+                completed["input_ids"].append(generated["input_ids"][done])
+                completed["probs"].append(generated["probs"][done])
                 if not model.omit_dialog_states:
-                    generated["speaker_ids"] = generated["speaker_ids"][keep]
+                    completed["speaker_ids"].append(generated["speaker_ids"][done])
 
-                # update the next model inputs to omit the completed samples
-                batch["input_ids"] = batch["input_ids"][keep]
-                if not model.omit_dialog_states:
-                    batch["speaker_ids"] = batch["speaker_ids"][keep]
+                if keep.nelement() == 0:  # We have completed the sampling of all batches
+                    generated["input_ids"] = []
+                    generated["speaker_ids"] = []
+                    generated["probs"] = []
+                    break
+                else:  # Update the generated indices for continued sampling
+                    generated["input_ids"] = generated["input_ids"][keep]
+                    generated["probs"] = generated["probs"][keep]
+                    if not model.omit_dialog_states:
+                        generated["speaker_ids"] = generated["speaker_ids"][keep]
 
-                # Update past_key_values
-                new_past = []
-                for layer in range(len(batch["past_key_values"])):
-                    new_past.append([])
-                    for key_or_value in range(len(batch["past_key_values"][layer])):
-                        tmp_key_val = batch["past_key_values"][layer][key_or_value][
-                            keep
-                        ]
-                        new_past[-1].append(tmp_key_val)
-                batch["past_key_values"] = new_past
+                    # update the next model inputs to omit the completed samples
+                    batch["input_ids"] = batch["input_ids"][keep]
+                    if not model.omit_dialog_states:
+                        batch["speaker_ids"] = batch["speaker_ids"][keep]
+
+                    # Update past_key_values
+                    new_past = []
+                    for layer in range(len(batch["past_key_values"])):
+                        new_past.append([])
+                        for key_or_value in range(len(batch["past_key_values"][layer])):
+                            tmp_key_val = batch["past_key_values"][layer][key_or_value][
+                                keep
+                            ]
+                            new_past[-1].append(tmp_key_val)
+                    batch["past_key_values"] = new_past
         n += 1
 
     # If we reached n_steps and have not move everything to completed

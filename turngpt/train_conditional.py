@@ -7,18 +7,55 @@ from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 import pytorch_lightning as pl
 
 from datasets_turntaking import ConversationalDM
-from turngpt.model import TurnGPT, TurnGPTWandbCallbacks
-from turngpt.conditional_model import *
+from datasets_turntaking.conversational.utils import load_multiple_datasets
+from datasets_turntaking import *
 
-PROJECT = "TurnGPT"
-SAVE_DIR = "runs/TurnGPT"
+from turngpt.conditional_model import TurnGPT, TurnGPTWandbCallbacks
+#from turngpt.conditional_model import *
 
+import pdb
+
+#PROJECT = "TurnGPT"
+#SAVE_DIR = "runs/TurnGPT"
+
+def dm_prepare_conditional():
+    '''
+    b2: actually, probably don't need this
+    '''
+    print('test overriding method')
+    
+    for split in ["train", "validation", "test"]:
+        split_path = self.get_split_path(split)
+
+        if (
+            self.overwrite
+            or not self.load_from_cache_file
+            or not exists(split_path)
+            or len(listdir(split_path)) == 0
+        ):
+
+            # Remove if it exists in order to overwrite
+            if self.overwrite and exists(split_path):
+                shutil.rmtree(split_path)
+
+            dsets = load_multiple_datasets(self.datasets, split)
+            dataset = concatenate_datasets(dsets)
+            print("filter empty turns")
+            dataset = dataset.filter(self.filter_empty_turns)
+            dataset = dataset.map(
+                self.encode,
+                batched=True,
+                load_from_cache_file=self.load_from_cache_file,
+                num_proc=self.num_proc,
+            )
+            dataset.set_format(type="torch")
+            dataset.save_to_disk(split_path)
 
 def default_logger_callbacks(name, args, callbacks):
-    makedirs(SAVE_DIR, exist_ok=True)
+    makedirs(args.SAVE_DIR, exist_ok=True)
     logger = WandbLogger(
-        save_dir=SAVE_DIR,
-        project=PROJECT,
+        save_dir=args.SAVE_DIR,
+        project=args.PROJECT,
         name=name + args.name_info,
         log_model=True,
     )
@@ -56,6 +93,8 @@ def train():
     parser.add_argument("--name_info", type=str, default="")
     parser.add_argument("--early_stopping", action="store_true")
     parser.add_argument("--patience", default=10, type=int)
+    parser.add_argument('--PROJECT', type=str, default='conditional_turngpt')
+    parser.add_argument('--SAVE_DIR', type=str, default='runs/conditional_turngpt')
     args = parser.parse_args()
 
     pl.seed_everything(args.seed)
@@ -75,6 +114,8 @@ def train():
         pretrained=args.pretrained,
         no_train_first_n=args.no_train_first_n,
         omit_dialog_states=args.omit_dialog_states,
+        sent_embed_type=args.sent_embed_type,
+        tokenizer_punctuation_norm= args.tokenizer_punctuation_norm
     )
     model.init_tokenizer()  # required for fresh model (saved on checkpoint)
     model.initialize_special_embeddings()  # required for fresh model (also performed in on_load_checkpoint)
@@ -93,8 +134,10 @@ def train():
         load_from_cache_file=args.load_from_cache_file,
         num_proc=args.num_proc,
     )
+    #pdb.set_trace()
+    #dm.prepare_data = dm_prepare_conditional
     dm.prepare_data()
-
+    #pdb.set_trace()
     # Callbacks & Logger
     logger = None
     callbacks = None
