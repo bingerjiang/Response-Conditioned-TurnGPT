@@ -571,7 +571,7 @@ class TurnGPT(pl.LightningModule, Utils):
                     pad_tensor = torch.Tensor([50256]).to(torch.int64).repeat(pad_len).to(self.device)
                     input_ids[i][second_last_ts_idx+1:]= pad_tensor
                 else: # end with word token, so last sentence is truncated
-                    pdb.set_trace()
+                   # pdb.set_trace()
                     last_ts_idx = ts_idx[i][-1]
                     #print(input_ids[i])
                    # print(last_ts_idx+1)
