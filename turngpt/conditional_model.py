@@ -9,12 +9,16 @@ import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 
+from x_transformers import TransformerWrapper, Decoder
+
 from turngpt.generation import generate
 from turngpt.plot_utils import plot_trp
 from turngpt.projection_labeler import ProjectionLabeler
 from turngpt.tokenizer import SpokenDialogTokenizer
 
 from turngpt.tools import remove_nonutt_tokens
+
+from conv_ssl.models.transformer import TransformerLayer
 
 import pdb
 mpl.use("agg")
@@ -146,13 +150,18 @@ class Utils:
 
 
 class TurnGPTWandbCallbacks(pl.Callback):
+    #turn_list = [
+    #    ["yesterday we met in the park", "okay when will you meet again", "tomorrow"],
+    #    [
+    #        "Hello there I basically had the worst day of my life",
+    #        "Oh no, what happened?",
+    #        "Do you want the long or the short story?",
+    #    ],
+    #]
     turn_list = [
-        ["yesterday we met in the park", "okay when will you meet again", "tomorrow"],
-        [
-            "Hello there I basically had the worst day of my life",
-            "Oh no, what happened?",
-            "Do you want the long or the short story?",
-        ],
+        ['Hello, how are you doing today?', 'Im good', 'How can I help you today?'],
+        ['Hello, how are you doing today?', 'Im good, how are you?', 'Im doing great, thanks!'],
+        ['Hello, how are you doing today?', 'Im good, how are you?', 'How can I help you today?'],
     ]
 
     def __init__(
@@ -236,6 +245,11 @@ class TurnGPTWandbCallbacks(pl.Callback):
         self.trp_plots(trainer, pl_module, name="TRP-chpt/example")
         self.generate(trainer, pl_module, name="Gen-chpt")
 
+    def on_validation_epoch_start(self, trainer, pl_module):
+        self.trp_plots(trainer, pl_module, name="TRP/example_start")
+        self.generate(trainer, pl_module, name="Gen_start")
+
+
 
 class TurnGPT(pl.LightningModule, Utils):
     """
@@ -300,7 +314,19 @@ class TurnGPT(pl.LightningModule, Utils):
                 raise NotImplementedError()
             else:
                 self.trp_projection_head = nn.Linear(hidden_size, 1)
-
+        
+        #self.alibi = TransformerWrapper(
+        #    num_tokens = 50259,
+        #    max_seq_len = 300,
+        #    attn_layers = Decoder(
+        #        dim = 768,
+        #        depth = 1,
+        #        heads = 8,
+        #        alibi_pos_bias = True, # turns on ALiBi positional embedding
+        #        alibi_num_heads = 4    # only use ALiBi for 4 out of the 8 heads, so other 4 heads can still attend far distances
+        #    )
+        #)
+        self.alibi = TransformerLayer(dim = 768)
         self.save_hyperparameters()
         #self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
@@ -510,11 +536,11 @@ class TurnGPT(pl.LightningModule, Utils):
             if return_dict is not None
             else self.transformer.config.use_return_dict
         )
-        
+        #input_ids = input_ids[0] 
         ## test of sentence embedding model
         test_sent = 'hi i would like very much to know about vietnam\'s etymology please'
         sent_embeddings = self.get_sentence_embeddings(self.sent_embedding_model, test_sent)
-        
+        #pdb.set_trace()
         
         if 50259 not in input_ids and 50258 not in input_ids:
 
@@ -582,23 +608,28 @@ class TurnGPT(pl.LightningModule, Utils):
             # 2. add (concat) the 0 to each tensor list
             first_next_utt_idx = torch.zeros([1], dtype=torch.int64).to(self.device)
             sent_emb_idx_all  = [torch.cat((first_next_utt_idx, el),0) for el in sent_emb_idx]
-            
-            transformer_outputs = self.transformer.transformer(
-                input_ids,
-                past_key_values=past_key_values,
-                attention_mask=attention_mask,
-                token_type_ids=speaker_ids,
-                position_ids=position_ids,
-                head_mask=head_mask,
-                inputs_embeds=inputs_embeds,
-                use_cache=use_cache,
-                output_attentions=output_attentions,
-                output_hidden_states=output_hidden_states,
-                return_dict=return_dict,
-            )
+            try: 
+                transformer_outputs = self.transformer.transformer(
+                    input_ids,
+                    past_key_values=past_key_values,
+                    attention_mask=attention_mask,
+                    token_type_ids=speaker_ids,
+                    position_ids=position_ids,
+                    head_mask=head_mask,
+                    inputs_embeds=inputs_embeds,
+                    use_cache=use_cache,
+                    output_attentions=output_attentions,
+                    output_hidden_states=output_hidden_states,
+                    return_dict=return_dict,
+                )
 
-            hidden_states = transformer_outputs[0]
-            
+                hidden_states = transformer_outputs[0]
+               # pdb.set_trace()
+               # hidden_states.view(hidden_states.shape[0], -1)
+               # hidden_states = self.alibi(hidden_states)
+            except RuntimeError:
+                print('runtime error, skip batch')
+                return None
 
             ## go over the batch and fill in idx=0 and <ts> positions with next_sent_embed
             i = 0
@@ -610,7 +641,17 @@ class TurnGPT(pl.LightningModule, Utils):
                     hidden_states[i][ts_idx_to_change] = next_utt_embeddings_batch[i][j]                
                     j+=1            
                 i+=1
-            
+            try:
+                hidden_states, attn = self.alibi(hidden_states)
+
+            except RuntimeError:
+                print('alibi error')
+                pdb.set_trace()
+            #try:
+            #    hidden_states = self.alibi(hidden_states.view(hidden_states.shape[0],-1)
+            #except RuntimeError:
+                #print('alibi error')
+            #    pdb.set_trace()
             # Set device for model parallelism
             if self.transformer.model_parallel:
                 torch.cuda.set_device(self.transformer.transformer.first_device)
@@ -707,7 +748,8 @@ class TurnGPT(pl.LightningModule, Utils):
             labels=lm_labels,
             mc_labels=proj_labels,
         )
-
+        if out is None:
+            return None
         if self.trp_projection_steps > 0:
             self.log("loss_lm", out["loss"])
             self.log("loss_projection", out["mc_loss"])
@@ -735,7 +777,8 @@ class TurnGPT(pl.LightningModule, Utils):
             labels=lm_labels,
             mc_labels=proj_labels,
         )
-
+        if out is None:
+            return None
         if self.trp_projection_steps > 0:
             self.log("val_loss_lm", out["loss"])
             self.log("val_loss_projection", out["mc_loss"])
