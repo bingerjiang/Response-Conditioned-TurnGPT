@@ -564,20 +564,27 @@ class TurnGPT(pl.LightningModule, Utils):
             while i < len(input_ids):
                 if input_ids[i][-1] in [50256, 50257]: # if <endoftext> or <ts>
                     # remove last sentence
-                    second_last_ts_idx = ts_idx[i][-2]
+                    try:
+                        second_last_ts_idx = ts_idx[i][-2]
                     #self.tokenizer.eos_token_id
                     
-                    pad_len = len(input_ids[i][second_last_ts_idx+1:])
-                    pad_tensor = torch.Tensor([50256]).to(torch.int64).repeat(pad_len).to(self.device)
-                    input_ids[i][second_last_ts_idx+1:]= pad_tensor
+                        pad_len = len(input_ids[i][second_last_ts_idx+1:])
+                        pad_tensor = torch.Tensor([50256]).to(torch.int64).repeat(pad_len).to(self.device)
+                        input_ids[i][second_last_ts_idx+1:]= pad_tensor
+                    except IndexError:
+                        print('ts_idx[i]', ts_idx[i])
                 else: # end with word token, so last sentence is truncated
                    # pdb.set_trace()
-                    last_ts_idx = ts_idx[i][-1]
+                    try:
+                        last_ts_idx = ts_idx[i][-1]
                     #print(input_ids[i])
                    # print(last_ts_idx+1)
-                    pad_len = len(input_ids[i][last_ts_idx+1:])
-                    pad_tensor = torch.Tensor([50256]).to(torch.int64).repeat(pad_len).to(self.device)
-                    input_ids[i][last_ts_idx+1:] = pad_tensor
+                        pad_len = len(input_ids[i][last_ts_idx+1:])
+                        pad_tensor = torch.Tensor([50256]).to(torch.int64).repeat(pad_len).to(self.device)
+                        input_ids[i][last_ts_idx+1:] = pad_tensor
+                    except IndexError:
+                        print('ts_idx[i]', ts_idx[i])
+
                 i+=1
             
             # turnshift token indices, after removing the last utterance 
