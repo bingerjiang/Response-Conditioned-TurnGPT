@@ -240,10 +240,7 @@ class TurnGPTWandbCallbacks(pl.Callback):
 class TurnGPT(pl.LightningModule, Utils):
     """
     This is the code example of teaching and research.
-
     Add features to this model i.e. analysis of turn-taking.
-
-
     On training
     * call `model.initialize_special_embeddings()` to initialize <ts> = eos_token
     """
@@ -331,7 +328,6 @@ class TurnGPT(pl.LightningModule, Utils):
     def initialize_special_embeddings(self, tokens=["!", "?", "."]):
         """
         Initialize `eos_token` as the average of `tokens`.
-
         By default (or looking at <speaker1/2>) the embeddings are initalized to m=0, std=0.02
         """
         ts = self.tokenizer.eos_token_id
@@ -390,24 +386,16 @@ class TurnGPT(pl.LightningModule, Utils):
     def cross_entropy_loss(self, logits, labels, reduction="mean"):
         """
         Taken from GPT2LMHeadModel in:
-
           https://github.com/huggingface/transformers/blob/91ff480e2693f36b11aaebc4e9cc79e4e3c049da/src/transformers/models/gpt2/modeling_gpt2.py#L968
-
         How to weight CE-Loss?
-
             https://discuss.pytorch.org/t/passing-the-weights-to-crossentropyloss-correctly/14731/10
-
         Using the custom weights gets a total loss that is larger than without?
         I don't want the model to train as much on the new type of text it receives but to learn the `eos_token` better.
         I assume that the loss should be less if I scale down the normal tokens loss...
-
         `CrossEntropyLoss` seems to normalize the loss if not `reduction=None` which account for the above behaviour.
-
         Instead we use `reduction=none` and simply average over the weighted loss values.
         Given that `weight_regular_token` < 1 and `weight_eos_token` >=1 we get a lower loss when weighting.
-
         Is this mathematically sound? well that is the question.
-
         I guess one could simply scale the `weight_eos_token > 1` while `weight_regular_token=1` and use a smaller learning rate?
         """
         weight = None
@@ -431,7 +419,6 @@ class TurnGPT(pl.LightningModule, Utils):
     def bce_loss(self, logits, labels, sent_emb_idx_all):
         """
         Simple BCELoss for binary trp projection
-
         Must extend this if multiple labels are to be used...
         """
         loss_fct = nn.BCEWithLogitsLoss()
@@ -516,7 +503,6 @@ class TurnGPT(pl.LightningModule, Utils):
     ):
         """
         Simple rewrite of original:
-
             https://github.com/huggingface/transformers/blob/439a43b6b403205eeda2d62645fc16c93627d30d/src/transformers/models/gpt2/modeling_gpt2.py#L1086
         """
         return_dict = (
@@ -531,8 +517,44 @@ class TurnGPT(pl.LightningModule, Utils):
         
         
         if 50259 not in input_ids and 50258 not in input_ids:
+
+
+            ## first clean dialogs, only keep multi-turn ones
+            # 1. need to remove sentence-final blanks (for <ts>)
+            # 2. remove <|endoftext|> symbols
+            ts_idx = [(sublist == 50257).nonzero(as_tuple=True)[0] for sublist in input_ids]            
+            
+            # clean utterances, should be longer than 2 turns
+            valid_input_ids_rows = [i for i in range(len(ts_idx)) if len(ts_idx[i])>1]
+            ts_idx_long = [ts_idx[idx] for idx in valid_input_ids_rows]
+            input_ids = input_ids[valid_input_ids_rows]
+            
+            ## remove the last utterance, because no next_utterance available
+            ## last sent -> <endoftext>
+            i = 0
+            while i < len(input_ids):
+                if input_ids[i][-1] in [50256, 50257]: # if <endoftext> or <ts>
+                    # remove last sentence
+                    try:
+                        second_last_ts_idx = ts_idx_long[i][-2]                   
+                        pad_len = len(input_ids[i][second_last_ts_idx+1:])
+                        pad_tensor = torch.Tensor([50256]).to(torch.int64).repeat(pad_len).to(self.device)
+                        input_ids[i][second_last_ts_idx+1:]= pad_tensor
+                    except IndexError:
+                        print('input_ids[i][-1] in [50256, 50257]; ts_idx[i]', ts_idx[i])
+                else: # end with word token, so last sentence is truncated
+                    try:
+                        last_ts_idx = ts_idx_long[i][-1]
+                        pad_len = len(input_ids[i][last_ts_idx+1:])
+                        pad_tensor = torch.Tensor([50256]).to(torch.int64).repeat(pad_len).to(self.device)
+                        input_ids[i][last_ts_idx+1:] = pad_tensor
+                    except IndexError:
+                        print('else; ts_idx[i]', ts_idx_long[i])
+
+                i+=1
+            
+            
             ## convert batch back to the string and clean special tokens
-        # pdb.set_trace()
             batch_sentences = [self.tokenizer.decode(el) for el in input_ids]
             batch_sentences_turnsplit = [el.split("<ts>") for el in batch_sentences]
             cleaned_batch_sents = remove_nonutt_tokens(batch_sentences_turnsplit)
@@ -547,46 +569,6 @@ class TurnGPT(pl.LightningModule, Utils):
                         el_embedding = self.get_sentence_embeddings(self.sent_embedding_model, el)
                         next_utts_embeddings.append(el_embedding)
                 next_utt_embeddings_batch.append(next_utts_embeddings)
-
-            #all_sentences = [self.get_sentence_embeddings(self.sent_embedding_model, el) for dialog in batch_sentences_turnsplit for el in dialog]
-            
-            ## TODO
-            # 1. need to remove sentence-final blanks (for <ts>)
-            # 2. remove <|endoftext|> symbols
-            ts_idx = [(sublist == 50257).nonzero(as_tuple=True)[0] for sublist in input_ids]
-            #print('ts_idx[0]:', ts_idx[0])
-            
-            #ts_idx2 = [(sublist == 50257).nonzero(as_tuple=True)[0] for sublist in batch['input_ids']]
-        # print('batch ts idx[0]', ts_idx2[0])
-            ## remove the last utterance, because no next_utterance available
-            #pdb.set_trace()
-            i = 0
-            while i < len(input_ids):
-                if input_ids[i][-1] in [50256, 50257]: # if <endoftext> or <ts>
-                    # remove last sentence
-                    try:
-                        second_last_ts_idx = ts_idx[i][-2]
-                    #self.tokenizer.eos_token_id
-                    
-                        pad_len = len(input_ids[i][second_last_ts_idx+1:])
-                        pad_tensor = torch.Tensor([50256]).to(torch.int64).repeat(pad_len).to(self.device)
-                        input_ids[i][second_last_ts_idx+1:]= pad_tensor
-                    except IndexError:
-                        print('ts_idx[i]', ts_idx[i])
-                else: # end with word token, so last sentence is truncated
-                   # pdb.set_trace()
-                    try:
-                        last_ts_idx = ts_idx[i][-1]
-                    #print(input_ids[i])
-                   # print(last_ts_idx+1)
-                        pad_len = len(input_ids[i][last_ts_idx+1:])
-                        pad_tensor = torch.Tensor([50256]).to(torch.int64).repeat(pad_len).to(self.device)
-                        input_ids[i][last_ts_idx+1:] = pad_tensor
-                    except IndexError:
-                        print('ts_idx[i]', ts_idx[i])
-
-                i+=1
-            
             # turnshift token indices, after removing the last utterance 
             # (this is what we want)
             ts_idx_no_last_sent = [(sublist == 50257).nonzero(as_tuple=True)[0] for sublist in input_ids]
