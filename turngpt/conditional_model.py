@@ -701,8 +701,8 @@ class TurnGPT(pl.LightningModule, Utils):
                 logits=lm_logits,
                 mc_logits=mc_logits,
                 past_key_values=transformer_outputs.past_key_values,
-                hidden_states=transformer_outputs.hidden_states,
-                attentions=transformer_outputs.attentions,
+                hidden_states=hidden_states,
+                attentions=attn,
             )
 
     def configure_optimizers(self):
