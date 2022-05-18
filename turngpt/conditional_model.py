@@ -223,7 +223,7 @@ class TurnGPTWandbCallbacks(pl.Callback):
             text = out['tokens'][b]
             
             if text is not None:
-            max_idx = len(text)
+                max_idx = len(text)
             for n, t in enumerate(text):
                 if t == unk_token:
                     max_idx = n
