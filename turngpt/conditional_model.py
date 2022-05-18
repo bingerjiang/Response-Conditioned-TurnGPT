@@ -159,9 +159,9 @@ class TurnGPTWandbCallbacks(pl.Callback):
     #    ],
     #]
     turn_list = [
-        ['Hello, how are you doing today?', 'Im good', 'How can I help you today?'],
-        ['Hello, how are you doing today?', 'Im good, how are you?', 'Im doing great, thanks!'],
-        ['Hello, how are you doing today?', 'Im good, how are you?', 'How can I help you today?'],
+        ['Hello, how are you doing today?', 'I\'m good', 'How can I help you today?'],
+        ['Hello, how are you doing today?', 'I\'m good. How are you?', 'I\'m doing great, thanks!'],
+        ['Hello, how are you doing today?', 'I\'m good. How are you?', 'How can I help you today?'],
     ]
 
     def __init__(
@@ -194,6 +194,60 @@ class TurnGPTWandbCallbacks(pl.Callback):
                 eos_token=pl_module.tokenizer.eos_token,
                 plot=False,
             )
+
+            pl_module.logger.experiment.log(
+                data={
+                    f"{name}_{b}": wandb.Image(fig),
+                    "global_step": trainer.global_step,
+                },
+            )
+            plt.close("all")
+    def attention_plot (self, trainer, pl_module, name="TRP/attention", unk_token="<|endoftext|>"):
+        out = pl_module.string_list_to_trp(self.text_list)
+        attn = out['attentions']
+        for b in range(attn.shape[0]):
+            #proj = out["trp_proj"][b].cpu() if "trp_proj" in out else None
+
+            # fig, _ = plot_attn(
+            #     attn=out['attentions'][b].cpu(),
+            #     proj=None,
+            #     text=out["tokens"][b],
+            #     unk_token=pl_module.tokenizer.unk_token,
+            #     eos_token=pl_module.tokenizer.eos_token,
+            #     plot=False,
+            # )
+            fig, ax = plt.subplots(
+                attn.shape[1],  sharex=True, sharey=True, figsize=(12, 36)
+            )
+            text = out['tokens'][b]
+            if text is not None:
+                max_idx = len(text)
+                for n, t in enumerate(text):
+                    if t == unk_token:
+                        max_idx = n
+                        break
+                text = text[:max_idx]
+                attn = attn[:max_idx]
+            for n_head in range(attn.shape[1]):
+                ax[n_head].imshow(
+                    attn[b, n_head].cpu(),
+                    aspect="auto",
+                    origin="upper",
+                    interpolation="none",
+                    vmin=0,
+                    vmax=1,
+                    cmap="viridis",
+                )
+                ax[n_head].set_ylabel(f"Head {n_head}")
+            x = torch.arange(attn.shape[-1])
+            ax[b].set_xticks(x)
+            ax[b].set_yticks(x)
+
+            plt.tight_layout()
+            if text is not None:
+                ax[b].set_xticklabels(text, rotation=60)
+                ax[b].set_yticklabels(text, rotation=60)
+
 
             pl_module.logger.experiment.log(
                 data={
@@ -240,14 +294,17 @@ class TurnGPTWandbCallbacks(pl.Callback):
     def on_validation_epoch_end(self, trainer, pl_module):
         self.trp_plots(trainer, pl_module, name="TRP/example")
         self.generate(trainer, pl_module, name="Gen")
+        self.attention_plot(trainer,pl_module, name='TRP/attention_end')
 
     def on_save_checkpoint(self, trainer, pl_module, *args, **kwargs):
         self.trp_plots(trainer, pl_module, name="TRP-chpt/example")
         self.generate(trainer, pl_module, name="Gen-chpt")
+        self.attention_plot(trainer,pl_module, name='TRP/attention_ckpt')
 
     def on_validation_epoch_start(self, trainer, pl_module):
         self.trp_plots(trainer, pl_module, name="TRP/example_start")
-        self.generate(trainer, pl_module, name="Gen_start")
+        #self.generate(trainer, pl_module, name="Gen_start")
+        self.attention_plot(trainer,pl_module, name='TRP/attention_start')
 
 
 
