@@ -1,6 +1,6 @@
 import matplotlib.pyplot as plt
 import torch
-
+import pdb
 
 def plot_trp(
     trp,
@@ -42,7 +42,57 @@ def plot_trp(
         plt.pause(0.01)
     return fig, ax
 
+def plot_attn(
+    attn,
+    proj=None,
+    text=None,
+    unk_token="<|endoftext|>",
+    eos_token="<ts>",
+    figsize=(9, 3),
+    plot=True,
+):
+    fig, ax = plt.subplots(1, 1, figsize=figsize)
 
+    # omit post unk_token
+    if text is not None:
+        max_idx = len(text)
+        for n, t in enumerate(text):
+            if t == unk_token:
+                max_idx = n
+                break
+        text = text[:max_idx]
+        attn = attn[:max_idx]
+        if proj is not None:
+            proj = proj[:max_idx]
+
+    x = torch.arange(len(attn))
+    if proj is not None:
+        ax.bar(x, proj, alpha=0.1, width=1.0, color="b", label="projection")
+    
+    #ax.bar(x, attn, width=0.3, color="b", label="attn")
+    for n_head in range(attn.shape[1]):
+        ax[n_head].imshow(
+            attn[b, n_head].cpu(),
+            aspect="auto",
+            origin="upper",
+            interpolation="none",
+            vmin=0,
+            vmax=1,
+            cmap="viridis",
+        )
+        ax[n_head].set_ylabel(f"Head {n_head}")
+    ax.set_xticks(x)
+    if text is not None:
+        ax.set_xticklabels(text, rotation=60)
+        for i, t in enumerate(text):
+            if t == eos_token:
+                ax.vlines(i, ymin=0, ymax=1, linestyle="dashed", color="r", alpha=0.6)
+    ax.set_ylim([0, 1])
+    ax.legend()
+    fig.tight_layout()
+    if plot:
+        plt.pause(0.01)
+    return fig, ax
 def plot_each_turn(trp, proj=None, likelihood=None, text=None):
     # split into turns
     turns = []

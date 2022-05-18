@@ -8,7 +8,8 @@ import pytorch_lightning as pl
 
 from datasets_turntaking import ConversationalDM
 from turngpt.model import TurnGPT, TurnGPTWandbCallbacks
-
+from os import environ
+local_rank = environ.get("LOCAL_RANK", 0)
 
 PROJECT = "TurnGPT"
 SAVE_DIR = "runs/TurnGPT"
@@ -24,13 +25,19 @@ def default_logger_callbacks(name, args, callbacks):
     )
     # logger.watch(model)
 
-    id_hash = logger.experiment.path.split("/")[-1]
-    ch_path = join(logger.save_dir, logger.name + "_" + id_hash)
+    # id_hash = logger.experiment.path.split("/")[-1]
+    # ch_path = join(logger.save_dir, logger.name + "_" + id_hash)
+    # callbacks.append(
+    #     ModelCheckpoint(
+    #         dirpath=ch_path,
+    #         filename="{epoch}_{val_loss:.4f}",
+    #         save_top_k=2,
+    #         mode="min",
+    #         monitor="val_loss",
+    #     )
+    # )
     callbacks.append(
         ModelCheckpoint(
-            dirpath=ch_path,
-            filename="{epoch}_{val_loss:.4f}",
-            save_top_k=2,
             mode="min",
             monitor="val_loss",
         )
@@ -59,7 +66,8 @@ def train():
     args = parser.parse_args()
 
     pl.seed_everything(args.seed)
-
+    print('--- args ---')
+    print(args)
     # Model
     print("Loading Model...")
     model = TurnGPT(

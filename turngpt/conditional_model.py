@@ -9,12 +9,16 @@ import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 
+#from x_transformers import TransformerWrapper, Decoder
+
 from turngpt.generation import generate
-from turngpt.plot_utils import plot_trp
+from turngpt.plot_utils import plot_trp, plot_attn
 from turngpt.projection_labeler import ProjectionLabeler
 from turngpt.tokenizer import SpokenDialogTokenizer
 
 from turngpt.tools import remove_nonutt_tokens
+
+from conv_ssl.models.transformer import TransformerLayer
 
 import pdb
 mpl.use("agg")
@@ -146,13 +150,18 @@ class Utils:
 
 
 class TurnGPTWandbCallbacks(pl.Callback):
+    #turn_list = [
+    #    ["yesterday we met in the park", "okay when will you meet again", "tomorrow"],
+    #    [
+    #        "Hello there I basically had the worst day of my life",
+    #        "Oh no, what happened?",
+    #        "Do you want the long or the short story?",
+    #    ],
+    #]
     turn_list = [
-        ["yesterday we met in the park", "okay when will you meet again", "tomorrow"],
-        [
-            "Hello there I basically had the worst day of my life",
-            "Oh no, what happened?",
-            "Do you want the long or the short story?",
-        ],
+        ['Hello, how are you doing today?', 'I\'m good', 'How can I help you today?'],
+        ['Hello, how are you doing today?', 'I\'m good. How are you?', 'I\'m doing great. thanks!'],
+        ['Hello, how are you doing today?', 'I\'m good. How are you?', 'How can I help you today?'],
     ]
 
     def __init__(
@@ -177,6 +186,7 @@ class TurnGPTWandbCallbacks(pl.Callback):
 
         for b in range(out["trp_probs"].shape[0]):
             proj = out["trp_proj"][b].cpu() if "trp_proj" in out else None
+            #pdb.set_trace()
             fig, _ = plot_trp(
                 trp=out["trp_probs"][b].cpu(),
                 proj=proj,
@@ -193,7 +203,61 @@ class TurnGPTWandbCallbacks(pl.Callback):
                 },
             )
             plt.close("all")
+    def attention_plot (self, trainer, pl_module, name="TRP/attention"):
+        out = pl_module.string_list_to_trp(self.text_list)
+        attn = out['attentions']
+        for b in range(attn.shape[0]):
+            #proj = out["trp_proj"][b].cpu() if "trp_proj" in out else None
+           
+            # fig, _ = plot_attn(
+            #     attn=out['attentions'][b].cpu(),
+            #     proj=None,
+            #     text=out["tokens"][b],
+            #     unk_token=pl_module.tokenizer.unk_token,
+            #     eos_token=pl_module.tokenizer.eos_token,
+            #     plot=False,
+            # )
+            fig, ax = plt.subplots(
+                attn.shape[1],  sharex=True, sharey=True, figsize=(12, 24)
+            )
+            text = out['tokens'][b]
+            
+            if text is not None:
+            max_idx = len(text)
+            for n, t in enumerate(text):
+                if t == unk_token:
+                    max_idx = n
+                    break
+            text = text[:max_idx]
+            trp = trp[:max_idx]
+            for n_head in range(attn.shape[1]):
+                ax[n_head].imshow(
+                    attn[b, n_head].cpu(),
+                    aspect="auto",
+                    origin="upper",
+                    interpolation="none",
+                    vmin=0,
+                    vmax=1,
+                    cmap="viridis",
+                )
+                ax[n_head].set_ylabel(f"Head {n_head}")
+            x = torch.arange(len(text))
+            ax[b].set_xticks(x)
+            ax[b].set_yticks(x)
+        
+            plt.tight_layout()
+            if text is not None:
+                ax[b].set_xticklabels(text, rotation=60)
+                ax[b].set_yticklabels(text, rotation=60)
 
+                
+            pl_module.logger.experiment.log(
+                data={
+                    f"{name}_{b}": wandb.Image(fig),
+                    "global_step": trainer.global_step,
+                },
+            )
+            plt.close("all")
     def generate(self, trainer, pl_module, name):
         gen = generate(
             pl_module,
@@ -230,11 +294,19 @@ class TurnGPTWandbCallbacks(pl.Callback):
 
     def on_validation_epoch_end(self, trainer, pl_module):
         self.trp_plots(trainer, pl_module, name="TRP/example")
+        self.attention_plot(trainer,pl_module, name='TRP/attention_end')
         self.generate(trainer, pl_module, name="Gen")
 
     def on_save_checkpoint(self, trainer, pl_module, *args, **kwargs):
         self.trp_plots(trainer, pl_module, name="TRP-chpt/example")
+        self.attention_plot(trainer,pl_module, name='TRP/attention_ckpt')
         self.generate(trainer, pl_module, name="Gen-chpt")
+
+    def on_validation_epoch_start(self, trainer, pl_module):
+        self.trp_plots(trainer, pl_module, name="TRP/example_start")
+        self.attention_plot(trainer,pl_module, name='TRP/attention_start')
+        #self.generate(trainer, pl_module, name="Gen_start")
+
 
 
 class TurnGPT(pl.LightningModule, Utils):
@@ -300,7 +372,19 @@ class TurnGPT(pl.LightningModule, Utils):
                 raise NotImplementedError()
             else:
                 self.trp_projection_head = nn.Linear(hidden_size, 1)
-
+        
+        #self.alibi = TransformerWrapper(
+        #    num_tokens = 50259,
+        #    max_seq_len = 300,
+        #    attn_layers = Decoder(
+        #        dim = 768,
+        #        depth = 1,
+        #        heads = 8,
+        #        alibi_pos_bias = True, # turns on ALiBi positional embedding
+        #        alibi_num_heads = 4    # only use ALiBi for 4 out of the 8 heads, so other 4 heads can still attend far distances
+        #    )
+        #)
+        self.alibi = TransformerLayer(dim = 768)
         self.save_hyperparameters()
         #self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
@@ -339,7 +423,7 @@ class TurnGPT(pl.LightningModule, Utils):
         # post = self.transformer.transformer.wte.weight[ts]
         # print(pre == post)
         print(f"Initalized {self.tokenizer.eos_token} -> avg({tokens})")
-
+       
     def print_parameters(self):
         print("")
         print("TurnGPT")
@@ -510,11 +594,11 @@ class TurnGPT(pl.LightningModule, Utils):
             if return_dict is not None
             else self.transformer.config.use_return_dict
         )
-        
+        #input_ids = input_ids[0] 
         ## test of sentence embedding model
         test_sent = 'hi i would like very much to know about vietnam\'s etymology please'
         sent_embeddings = self.get_sentence_embeddings(self.sent_embedding_model, test_sent)
-        
+        #pdb.set_trace()
         
         if 50259 not in input_ids and 50258 not in input_ids:
 
@@ -582,23 +666,28 @@ class TurnGPT(pl.LightningModule, Utils):
             # 2. add (concat) the 0 to each tensor list
             first_next_utt_idx = torch.zeros([1], dtype=torch.int64).to(self.device)
             sent_emb_idx_all  = [torch.cat((first_next_utt_idx, el),0) for el in sent_emb_idx]
-            
-            transformer_outputs = self.transformer.transformer(
-                input_ids,
-                past_key_values=past_key_values,
-                attention_mask=attention_mask,
-                token_type_ids=speaker_ids,
-                position_ids=position_ids,
-                head_mask=head_mask,
-                inputs_embeds=inputs_embeds,
-                use_cache=use_cache,
-                output_attentions=output_attentions,
-                output_hidden_states=output_hidden_states,
-                return_dict=return_dict,
-            )
+            try: 
+                transformer_outputs = self.transformer.transformer(
+                    input_ids,
+                    past_key_values=past_key_values,
+                    attention_mask=attention_mask,
+                    token_type_ids=speaker_ids,
+                    position_ids=position_ids,
+                    head_mask=head_mask,
+                    inputs_embeds=inputs_embeds,
+                    use_cache=use_cache,
+                    output_attentions=output_attentions,
+                    output_hidden_states=output_hidden_states,
+                    return_dict=return_dict,
+                )
 
-            hidden_states = transformer_outputs[0]
-            
+                hidden_states = transformer_outputs[0]
+               # pdb.set_trace()
+               # hidden_states.view(hidden_states.shape[0], -1)
+               # hidden_states = self.alibi(hidden_states)
+            except RuntimeError:
+                print('runtime error, skip batch')
+                return None
 
             ## go over the batch and fill in idx=0 and <ts> positions with next_sent_embed
             i = 0
@@ -610,7 +699,17 @@ class TurnGPT(pl.LightningModule, Utils):
                     hidden_states[i][ts_idx_to_change] = next_utt_embeddings_batch[i][j]                
                     j+=1            
                 i+=1
-            
+            try:
+                hidden_states, attn = self.alibi(hidden_states)
+
+            except RuntimeError:
+                print('alibi error')
+                pdb.set_trace()
+            #try:
+            #    hidden_states = self.alibi(hidden_states.view(hidden_states.shape[0],-1)
+            #except RuntimeError:
+                #print('alibi error')
+            #    pdb.set_trace()
             # Set device for model parallelism
             if self.transformer.model_parallel:
                 torch.cuda.set_device(self.transformer.transformer.first_device)
@@ -654,15 +753,42 @@ class TurnGPT(pl.LightningModule, Utils):
             #         output = (mc_loss,) + output
             #     return ((lm_loss,) + output) if lm_loss is not None else output
             #pdb.set_trace()
-            return GPT2DoubleHeadsModelOutput(
+            
+            
+            ## plot attention
+            ## attn (b, nheads, seq_len, seq_len)
+            ############ the following works ############
+            # b = 0
+            # fig, ax = plt.subplots(
+            #     attn.shape[1],  sharex=True, sharey=True, figsize=(12, 12)
+            # )
+            # for n_head in range(attn.shape[1]):
+            #     ax[n_head].imshow(
+            #         attn[b, n_head].cpu(),
+            #         aspect="auto",
+            #         origin="upper",
+            #         interpolation="none",
+            #         vmin=0,
+            #         vmax=1,
+            #         cmap="viridis",
+            #     )
+            #     ax[n_head].set_ylabel(f"Head {n_head}")
+            # ax[0].set_xticks([])
+            # ax[0].set_yticks([])
+            # plt.tight_layout()
+            # plt.savefig('test.png')
+            ##############################################
+            out = GPT2DoubleHeadsModelOutput(
                 loss=lm_loss,
                 mc_loss=mc_loss,
                 logits=lm_logits,
                 mc_logits=mc_logits,
                 past_key_values=transformer_outputs.past_key_values,
-                hidden_states=transformer_outputs.hidden_states,
-                attentions=transformer_outputs.attentions,
+                hidden_states=hidden_states,
+                attentions=attn,
             )
+            #pdb.set_trace()    
+            return out
 
     def configure_optimizers(self):
         # NOTE:
@@ -707,7 +833,8 @@ class TurnGPT(pl.LightningModule, Utils):
             labels=lm_labels,
             mc_labels=proj_labels,
         )
-
+        if out is None:
+            return None
         if self.trp_projection_steps > 0:
             self.log("loss_lm", out["loss"])
             self.log("loss_projection", out["mc_loss"])
@@ -735,7 +862,8 @@ class TurnGPT(pl.LightningModule, Utils):
             labels=lm_labels,
             mc_labels=proj_labels,
         )
-
+        if out is None:
+            return None
         if self.trp_projection_steps > 0:
             self.log("val_loss_lm", out["loss"])
             self.log("val_loss_projection", out["mc_loss"])

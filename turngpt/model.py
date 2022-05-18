@@ -144,15 +144,19 @@ class Utils:
 
 
 class TurnGPTWandbCallbacks(pl.Callback):
+    # turn_list = [
+    #     ["yesterday we met in the park", "okay when will you meet again", "tomorrow"],
+    #     [
+    #         "Hello there I basically had the worst day of my life",
+    #         "Oh no, what happened?",
+    #         "Do you want the long or the short story?",
+    #     ],
+    # ]
     turn_list = [
-        ["yesterday we met in the park", "okay when will you meet again", "tomorrow"],
-        [
-            "Hello there I basically had the worst day of my life",
-            "Oh no, what happened?",
-            "Do you want the long or the short story?",
-        ],
+        ['Hello, how are you doing today?', 'Im good', 'How can I help you today?'],
+        ['Hello, how are you doing today?', 'Im good, how are you?', 'Im doing great, thanks!'],
+        ['Hello, how are you doing today?', 'Im good, how are you?', 'How can I help you today?'],
     ]
-
     def __init__(
         self,
         text_list=None,
@@ -233,7 +237,9 @@ class TurnGPTWandbCallbacks(pl.Callback):
     def on_save_checkpoint(self, trainer, pl_module, *args, **kwargs):
         self.trp_plots(trainer, pl_module, name="TRP-chpt/example")
         self.generate(trainer, pl_module, name="Gen-chpt")
-
+    def on_validation_epoch_start(self, trainer, pl_module):
+        self.trp_plots(trainer, pl_module, name="TRP/example_start")
+        self.generate(trainer, pl_module, name="Gen_start")
 
 class TurnGPT(pl.LightningModule, Utils):
     """
@@ -304,8 +310,8 @@ class TurnGPT(pl.LightningModule, Utils):
         normalize_punctuation = False
         if self.tokenizer_punctuation_norm:
             normalize_punctuation = True
-        self.tokenizer = SpokenDialogTokenizer(self.name_or_path, normalization = normalize_punctuation)
-        pdb.set_trace()
+        self.tokenizer = SpokenDialogTokenizer("gpt2", normalization = False)
+        #pdb.set_trace()
         #print('b2 test: normalize_punct: ', normalize_punctuation)
         #print('b2 test: self.tokenizer_punctuation_norm: ', self.tokenizer_punctuation_norm)
 
@@ -488,7 +494,9 @@ class TurnGPT(pl.LightningModule, Utils):
             if return_dict is not None
             else self.transformer.config.use_return_dict
         )
-
+        #if  50259 in input_ids:
+         #   print(input_ids)
+         #   print('speaker_ids:', speaker_ids)
         transformer_outputs = self.transformer.transformer(
             input_ids,
             past_key_values=past_key_values,
