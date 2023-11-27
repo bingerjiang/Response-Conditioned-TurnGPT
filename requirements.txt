@@ -4,4 +4,3 @@ pytorch-lightning
 wandb
 matplotlib
 einops
-pytest
